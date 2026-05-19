@@ -481,7 +481,11 @@ async function fetchGcalEvents(){
     const tMax=encodeURIComponent(today+'T23:59:59+09:00');
     const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${tMin}&timeMax=${tMax}&singleEvents=true&orderBy=startTime`,{headers:{Authorization:'Bearer '+accessToken}});
     const d=await r.json();
-    gcalEvents=(d.items||[]).filter(e=>e.start&&(e.start.dateTime||e.start.date));
+    gcalEvents=(d.items||[])
+      // Keep events that have a start date or dateTime
+      .filter(e=> e.start && (e.start.dateTime || e.start.date))
+      // Exclude events that correspond to existing tasks (prevent duplicates)
+      .filter(e=> !tasks.some(t => t.gcalEventId === e.id));
     showToast('Google 캘린더 불러옴 ('+gcalEvents.length+'개)');
     if(dailyTab==='timeline') renderTimeline();
   }catch(e){console.warn('GCal fetch failed',e);}
@@ -524,15 +528,44 @@ function loadLocal(){try{const d=localStorage.getItem('jido_v3');if(d){const p=J
 // ── Google Calendar Sync (auto-create/update events) ─────────────────
 async function syncTaskToGcal(task){
   if(!accessToken) return;
-  if(!task || !task.due || task.startHour===undefined || task.startHour===null) return;
+  if(!task || !task.due) return;
   try{
-    const startDate=new Date(task.due + 'T' + String(task.startHour).padStart(2,'0') + ':00:00+09:00');
-    const endDate=new Date(startDate.getTime() + ((task.plannedTime || 60)*60000));
-    const event={summary:task.name,description:task.memo || '',start:{dateTime:startDate.toISOString()},end:{dateTime:endDate.toISOString()}};
-    if(task.gcalEventId){
-      await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${task.gcalEventId}`,{method:'PATCH',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},body:JSON.stringify(event)});
+    let event;
+    if(task.startHour===undefined || task.startHour===null){
+      // If no start time is provided, create an all-day event. Set end date to the next day.
+      const dueDate = new Date(task.due + 'T00:00:00');
+      const endDate = new Date(dueDate.getTime());
+      endDate.setDate(endDate.getDate()+1);
+      const endDateStr = endDate.toISOString().split('T')[0];
+      event={
+        summary:task.name,
+        description:task.memo || '',
+        start:{date:task.due},
+        end:{date:endDateStr}
+      };
     } else {
-      const resp=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},body:JSON.stringify(event)});
+      // Timed event uses dateTime fields with planned duration (default to 60 minutes)
+      const startDate=new Date(task.due + 'T' + String(task.startHour).padStart(2,'0') + ':00:00+09:00');
+      const endDate=new Date(startDate.getTime() + ((task.plannedTime || 60)*60000));
+      event={
+        summary:task.name,
+        description:task.memo || '',
+        start:{dateTime:startDate.toISOString()},
+        end:{dateTime:endDate.toISOString()}
+      };
+    }
+    if(task.gcalEventId){
+      await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${task.gcalEventId}`,{
+        method:'PATCH',
+        headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
+        body:JSON.stringify(event)
+      });
+    } else {
+      const resp=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{
+        method:'POST',
+        headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
+        body:JSON.stringify(event)
+      });
       const data=await resp.json();
       if(data && data.id) task.gcalEventId=data.id;
     }
