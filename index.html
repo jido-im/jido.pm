@@ -463,7 +463,7 @@ function signIn(){
   google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:async(res)=>{
     if(res.error){showToast('로그인 실패');return;}
     accessToken=res.access_token;
-        localStorage.setItem('jido_accessToken', accessToken);
+        // removed persisting access token
     document.getElementById('btn-signin').style.display='none';
     document.getElementById('btn-signout').style.display='';
     setSyncStatus('syncing','동기화 중...');
@@ -472,7 +472,7 @@ function signIn(){
   }}).requestAccessToken();
 }
 function signOut(){accessToken=null;driveFileId=null;
-  localStorage.removeItem('jido_accessToken');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
+  document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
 async function fetchGcalEvents(){
   if(!accessToken) return;
   try{
@@ -1031,7 +1031,7 @@ function deleteProject(){
 // ── Init ──────────────────────────────────────────────────
 loadLocal();
 loadLocal();
-const savedTok = localStorage.getItem('jido_accessToken');
+const savedTok = null; // disabled localStorage persistence
 if(savedTok){
   accessToken = savedTok;
   document.getElementById('btn-signin').style.display='none';
