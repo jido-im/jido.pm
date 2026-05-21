@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>jido. pm</title>
-    <link rel="icon" type="image/png" href="./favicon.png">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231a1a18'/><text x='50%25' y='58%25' font-size='16' text-anchor='middle' dominant-baseline='middle' fill='white' font-family='sans-serif' font-weight='bold'>j.</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 @font-face {
@@ -457,15 +457,40 @@ let accessToken=null,driveFileId=null,syncTimeout=null;
 let gcalEvents=[]; // Google Calendar events for today
 
 // ── Google Drive ──────────────────────────────────────────
-(function(){var s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';document.head.appendChild(s);})();
+(function(){var s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';
+  s.onload=function(){
+    // Auto-restore session if user previously logged in
+    const hint=localStorage.getItem('jido_login_hint');
+    if(hint){
+      try{
+        const client=google.accounts.oauth2.initTokenClient({
+          client_id:CLIENT_ID,scope:SCOPES,
+          hint:hint,
+          prompt:'none', // silent — no popup
+          callback:async(res)=>{
+            if(res.error||!res.access_token) return; // silent fail, user clicks login
+            accessToken=res.access_token;
+            document.getElementById('btn-signin').style.display='none';
+            document.getElementById('btn-signout').style.display='';
+            setSyncStatus('syncing','동기화 중...');
+            await loadFromDrive();
+            await fetchGcalEvents();
+          }
+        });
+        client.requestAccessToken();
+      }catch(e){}
+    }
+  };
+  document.head.appendChild(s);
+})();
 function signIn(){
   if(typeof google==='undefined'){showToast('잠시 후 다시 시도해주세요');return;}
   google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:async(res)=>{
     if(res.error){showToast('로그인 실패');return;}
     accessToken=res.access_token;
-        const expiresAt = Date.now() + ((res.expires_in || 3600) * 1000);
-        localStorage.setItem('jido_accessToken', accessToken);
-        localStorage.setItem('jido_accessTokenExpires', expiresAt.toString());
+    // Save login hint for auto-restore on reload
+    if(res.email) localStorage.setItem('jido_login_hint', res.email);
+    else{ try{ const p=await(await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+accessToken}})).json(); if(p.email) localStorage.setItem('jido_login_hint',p.email); }catch(e){} }
     document.getElementById('btn-signin').style.display='none';
     document.getElementById('btn-signout').style.display='';
     setSyncStatus('syncing','동기화 중...');
@@ -473,31 +498,46 @@ function signIn(){
     await fetchGcalEvents();
   }}).requestAccessToken();
 }
-function signOut(){accessToken=null;driveFileId=null;
-  localStorage.removeItem('jido_accessToken');
-  localStorage.removeItem('jido_accessTokenExpires');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
+function signOut(){accessToken=null;driveFileId=null;localStorage.removeItem('jido_login_hint');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
 async function fetchGcalEvents(){
   if(!accessToken) return;
   try{
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = now.getMonth() + 1;
-    const firstDayStr = y + '-' + String(m).padStart(2,'0') + '-01T00:00:00+09:00';
-    const nextMonth = new Date(now.getFullYear(), now.getMonth()+1, 1);
-    const nextYear = nextMonth.getFullYear();
-    const nextMonthNum = nextMonth.getMonth() + 1;
-    const nextDateStr = nextYear + '-' + String(nextMonthNum).padStart(2,'0') + '-01T00:00:00+09:00';
-    const tMin=encodeURIComponent(firstDayStr);
-    const tMax=encodeURIComponent(nextDateStr);
-    const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${tMin}&timeMax=${tMax}&singleEvents=true&orderBy=startTime`,{headers:{Authorization:'Bearer '+accessToken}});
-    const d=await r.json();
-    gcalEvents=(d.items||[])
-      // Keep events that have a start date or dateTime
-      .filter(e=> e.start && (e.start.dateTime || e.start.date))
-      // Exclude events that correspond to existing tasks (prevent duplicates)
-      .filter(e=> !tasks.some(t => t.gcalEventId === e.id));
-    showToast('Google 캘린더 불러옴 ('+gcalEvents.length+'개)');
-    if(dailyTab==='timeline') renderTimeline();
+    // 이번달 시작~끝
+    const now=new Date();
+    const y=now.getFullYear(), m=now.getMonth();
+    const tMin=encodeURIComponent(new Date(y,m,1).toISOString());
+    const tMax=encodeURIComponent(new Date(y,m+1,0,23,59,59).toISOString());
+
+    // 1. 모든 캘린더 목록 가져오기
+    const calListRes=await fetch(
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader',
+      {headers:{Authorization:'Bearer '+accessToken}}
+    );
+    const calList=await calListRes.json();
+    const calendars=(calList.items||[]).filter(c=>c.selected!==false);
+
+    // 2. 각 캘린더에서 이번달 이벤트 병렬 fetch
+    const results=await Promise.allSettled(
+      calendars.map(cal=>
+        fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?timeMin=${tMin}&timeMax=${tMax}&singleEvents=true&orderBy=startTime&maxResults=250`,
+          {headers:{Authorization:'Bearer '+accessToken}}
+        ).then(r=>r.json()).then(d=>(d.items||[]).map(e=>({
+          ...e,
+          _calId:cal.id,
+          _calName:cal.summary,
+          _calColor:cal.backgroundColor||'#4285f4'
+        })))
+      )
+    );
+
+    // 3. 합치기
+    gcalEvents=results
+      .filter(r=>r.status==='fulfilled')
+      .flatMap(r=>r.value)
+      .filter(e=>e.start&&(e.start.dateTime||e.start.date));
+
+    showToast('Google 캘린더 불러옴 ('+gcalEvents.length+'개 / '+calendars.length+'개 캘린더)');
+    renderAll();
   }catch(e){console.warn('GCal fetch failed',e);}
 }
 function setSyncStatus(t,txt){document.getElementById('sync-dot').className='dot'+(t?' '+t:'');document.getElementById('sync-text').textContent=txt;}
@@ -541,41 +581,18 @@ async function syncTaskToGcal(task){
   if(!task || !task.due) return;
   try{
     let event;
-    if(task.startHour===undefined || task.startHour===null){
-      // If no start time is provided, create an all-day event. Set end date to the next day.
-      const dueDate = new Date(task.due + 'T00:00:00');
-      const endDate = new Date(dueDate.getTime());
-      endDate.setDate(endDate.getDate()+1);
-      const endDateStr = endDate.toISOString().split('T')[0];
-      event={
-        summary:task.name,
-        description:task.memo || '',
-        start:{date:task.due},
-        end:{date:endDateStr}
-      };
-    } else {
-      // Timed event uses dateTime fields with planned duration (default to 60 minutes)
+    if(task.startHour!==undefined && task.startHour!==null && task.startHour!==''){
       const startDate=new Date(task.due + 'T' + String(task.startHour).padStart(2,'0') + ':00:00+09:00');
       const endDate=new Date(startDate.getTime() + ((task.plannedTime || 60)*60000));
-      event={
-        summary:task.name,
-        description:task.memo || '',
-        start:{dateTime:startDate.toISOString()},
-        end:{dateTime:endDate.toISOString()}
-      };
+      event={summary:task.name,description:task.memo||'',start:{dateTime:startDate.toISOString(),timeZone:'Asia/Seoul'},end:{dateTime:endDate.toISOString(),timeZone:'Asia/Seoul'}};
+    } else {
+      // all-day event
+      event={summary:task.name,description:task.memo||'',start:{date:task.due},end:{date:task.due}};
     }
     if(task.gcalEventId){
-      await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${task.gcalEventId}`,{
-        method:'PATCH',
-        headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
-        body:JSON.stringify(event)
-      });
+      await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${task.gcalEventId}`,{method:'PATCH',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},body:JSON.stringify(event)});
     } else {
-      const resp=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{
-        method:'POST',
-        headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
-        body:JSON.stringify(event)
-      });
+      const resp=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},body:JSON.stringify(event)});
       const data=await resp.json();
       if(data && data.id) task.gcalEventId=data.id;
     }
@@ -723,15 +740,28 @@ function renderCal(){
     const isToday=calYear===today.getFullYear()&&calMonth===today.getMonth()&&d===today.getDate();
     const ds=`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const dt=ft.filter(t=>t.due===ds);
-    html+=`<div class="day ${isToday?'today':''}"><div class="dn">${d}</div>`+
-      dt.slice(0,2).map(t=>{const p=getProj(t.projId);return`<div class="ev" style="background:${p.color}22;color:${p.color}" onclick="openPanel(${t.id})">${t.name}</div>`;}).join('')+
-      (dt.length>2?`<div style="font-size:10px;color:var(--text3)">+${dt.length-2}</div>`:'')+`</div>`;
+    // Google Calendar events for this day
+    const ge=gcalEvents.filter(e=>{
+      const eDate=e.start.dateTime?e.start.dateTime.split('T')[0]:e.start.date;
+      return eDate===ds;
+    });
+    const total=dt.length+ge.length;
+    const taskEvs=dt.slice(0,2).map(t=>{const p=getProj(t.projId);return`<div class="ev" style="background:${p.color}22;color:${p.color}" onclick="openPanel(${t.id})">${t.name}</div>`;}).join('');
+    const gcalEvs=ge.slice(0,Math.max(0,2-dt.length)).map(e=>`<div class="ev" style="background:${e._calColor||'#4285f4'}22;color:${e._calColor||'#4285f4'}">${e.summary||'(일정)'}</div>`).join('');
+    const more=total>2?`<div style="font-size:10px;color:var(--text3)">+${total-2}</div>`:'';
+    html+=`<div class="day ${isToday?'today':''}"><div class="dn">${d}</div>${taskEvs}${gcalEvs}${more}</div>`;
   }
   const remain=(first+days)%7===0?0:7-(first+days)%7;
   for(let d=1;d<=remain;d++)html+=`<div class="day om"><div class="dn">${d}</div></div>`;
   document.getElementById('cal-grid').innerHTML=html;
 }
-function changeMonth(d){calMonth+=d;if(calMonth>11){calMonth=0;calYear++;}if(calMonth<0){calMonth=11;calYear--;}renderCal();}
+function changeMonth(d){
+  calMonth+=d;
+  if(calMonth>11){calMonth=0;calYear++;}
+  if(calMonth<0){calMonth=11;calYear--;}
+  // re-fetch gcal for new month if logged in
+  if(accessToken) fetchGcalEvents(); else renderCal();
+}
 
 // ── Daily ─────────────────────────────────────────────────
 let dailyTab = 'tasks';
@@ -1039,22 +1069,7 @@ function deleteProject(){
 }
 
 // ── Init ──────────────────────────────────────────────────
-loadLocal();
-loadLocal();
-const savedTok = localStorage.getItem('jido_accessToken');
-const expiresAt = parseInt(localStorage.getItem('jido_accessTokenExpires') || '0', 10);
-if(savedTok && expiresAt <= Date.now()){
-  localStorage.removeItem('jido_accessToken');
-  localStorage.removeItem('jido_accessTokenExpires');
-}
-if(savedTok && expiresAt > Date.now()){
-  accessToken = savedTok;
-  document.getElementById('btn-signin').style.display='none';
-  document.getElementById('btn-signout').style.display='';
-  setSyncStatus('syncing','동기화 중...');
-  loadFromDrive().then(()=>fetchGcalEvents()).catch(()=>{signOut();});
-}
-renderAll();
+loadLocal();renderAll();
 document.getElementById('proj-filter').style.display='flex';
 </script>
 </body>
