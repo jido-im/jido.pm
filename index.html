@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>jido. pm</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231a1a18'/><text x='50%25' y='58%25' font-size='16' text-anchor='middle' dominant-baseline='middle' fill='white' font-family='sans-serif' font-weight='bold'>j.</text></svg>">
+    <link rel="icon" type="image/png" href="./favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 @font-face {
@@ -105,10 +105,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#f2f1ed;color:
 .nbtn{width:28px;height:28px;border:1px solid var(--border2);background:var(--card);border-radius:7px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;color:var(--text2)}
 .nbtn:hover{background:var(--bg)}
 .gl{display:none}
-.dl{font-size:11px;font-weight:600;text-align:center;color:var(--text3);padding:6px 0}
+.dl{font-size:11px;font-weight:600;text-align:center;color:var(--text3);padding:6px 0;height:28px;display:flex;align-items:center;justify-content:center}
 .cg{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
 .cg-full{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.day{min-height:70px;background:var(--card);border-radius:7px;padding:5px;border:1px solid var(--border);cursor:pointer}
+.day{height:96px;background:var(--card);border-radius:7px;padding:5px;border:1px solid var(--border);cursor:pointer;overflow:hidden;display:flex;flex-direction:column}
 .day:hover{border-color:#a8c8e8}
 .day.om{background:var(--bg);opacity:.5}
 .day.today{border-color:var(--blue)}
@@ -457,45 +457,79 @@ let accessToken=null,driveFileId=null,syncTimeout=null;
 let gcalEvents=[]; // Google Calendar events for today
 
 // ── Google Drive ──────────────────────────────────────────
-(function(){var s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';
+(function(){
+  var s=document.createElement('script');
+  s.src='https://accounts.google.com/gsi/client';
   s.onload=function(){
-    // Auto-restore session if user previously logged in
+    // Auto sign-in: silently request token using stored hint
     const hint=localStorage.getItem('jido_login_hint');
-    if(hint){
-      try{
-        const client=google.accounts.oauth2.initTokenClient({
-          client_id:CLIENT_ID,scope:SCOPES,
-          hint:hint,
-          prompt:'none', // silent — no popup
+    if(!hint) return;
+    // Use One Tap credential to get access token silently
+    google.accounts.id.initialize({
+      client_id: CLIENT_ID,
+      auto_select: true,
+      callback: async(credRes)=>{
+        if(!credRes.credential) return;
+        // Exchange id_token for access token via token client
+        _tokenClient=google.accounts.oauth2.initTokenClient({
+          client_id:CLIENT_ID, scope:SCOPES,
+          login_hint:hint,
+          prompt:'',
           callback:async(res)=>{
-            if(res.error||!res.access_token) return; // silent fail, user clicks login
-            accessToken=res.access_token;
-            document.getElementById('btn-signin').style.display='none';
-            document.getElementById('btn-signout').style.display='';
-            setSyncStatus('syncing','동기화 중...');
-            await loadFromDrive();
-            await fetchGcalEvents();
+            if(res.error||!res.access_token) return;
+            await _onSignedIn(res.access_token);
           }
         });
-        client.requestAccessToken();
-      }catch(e){}
-    }
+        _tokenClient.requestAccessToken();
+      }
+    });
+    // Also try silent token request directly
+    _tokenClient=google.accounts.oauth2.initTokenClient({
+      client_id:CLIENT_ID, scope:SCOPES,
+      login_hint:hint,
+      prompt:'',
+      callback:async(res)=>{
+        if(res.error||!res.access_token) return;
+        await _onSignedIn(res.access_token);
+      }
+    });
+    _tokenClient.requestAccessToken();
   };
   document.head.appendChild(s);
 })();
+let _tokenClient=null;
+async function _onSignedIn(token){
+  accessToken=token;
+  document.getElementById('btn-signin').style.display='none';
+  document.getElementById('btn-signout').style.display='';
+  setSyncStatus('syncing','동기화 중...');
+  await loadFromDrive();
+  await fetchGcalEvents();
+  // Auto-refresh token every 45 min (token lasts 60 min)
+  setTimeout(()=>_refreshToken(),45*60*1000);
+}
+function _refreshToken(){
+  const hint=localStorage.getItem('jido_login_hint');
+  if(!hint||!accessToken) return;
+  const client=google.accounts.oauth2.initTokenClient({
+    client_id:CLIENT_ID, scope:SCOPES,
+    login_hint:hint, prompt:'',
+    callback:(res)=>{
+      if(res.access_token){ accessToken=res.access_token; setSyncStatus('ok','동기화 완료'); setTimeout(()=>_refreshToken(),45*60*1000); }
+    }
+  });
+  client.requestAccessToken();
+}
 function signIn(){
   if(typeof google==='undefined'){showToast('잠시 후 다시 시도해주세요');return;}
   google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:async(res)=>{
     if(res.error){showToast('로그인 실패');return;}
-    accessToken=res.access_token;
-    // Save login hint for auto-restore on reload
-    if(res.email) localStorage.setItem('jido_login_hint', res.email);
-    else{ try{ const p=await(await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+accessToken}})).json(); if(p.email) localStorage.setItem('jido_login_hint',p.email); }catch(e){} }
-    document.getElementById('btn-signin').style.display='none';
-    document.getElementById('btn-signout').style.display='';
-    setSyncStatus('syncing','동기화 중...');
-    await loadFromDrive();
-    await fetchGcalEvents();
+    // Save email hint for auto-restore
+    try{
+      const info=await(await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+res.access_token}})).json();
+      if(info.email) localStorage.setItem('jido_login_hint',info.email);
+    }catch(e){}
+    await _onSignedIn(res.access_token);
   }}).requestAccessToken();
 }
 function signOut(){accessToken=null;driveFileId=null;localStorage.removeItem('jido_login_hint');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
@@ -510,7 +544,7 @@ async function fetchGcalEvents(){
 
     // 1. 모든 캘린더 목록 가져오기
     const calListRes=await fetch(
-      'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader',
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList?showHidden=true',
       {headers:{Authorization:'Bearer '+accessToken}}
     );
     const calList=await calListRes.json();
@@ -748,10 +782,15 @@ function renderCal(){
       return eDate===ds;
     });
     const total=dt.length+ge.length;
-    const taskEvs=dt.slice(0,2).map(t=>{const p=getProj(t.projId);return`<div class="ev" style="background:${p.color}22;color:${p.color}" onclick="openPanel(${t.id})">${t.name}</div>`;}).join('');
-    const gcalEvs=ge.slice(0,Math.max(0,2-dt.length)).map(e=>`<div class="ev" style="background:${e._calColor||'#4285f4'}22;color:${e._calColor||'#4285f4'}">${e.summary||'(일정)'}</div>`).join('');
-    const more=total>2?`<div style="font-size:10px;color:var(--text3)">+${total-2}</div>`:'';
-    html+=`<div class="day ${isToday?'today':''}"><div class="dn">${d}</div>${taskEvs}${gcalEvs}${more}</div>`;
+    // Mix and limit to 2 visible events, rest as +N
+    const MAX_EV=2;
+    const allEvs=[
+      ...dt.map(t=>{const p=getProj(t.projId);return{html:`<div class="ev" style="background:${p.color}22;color:${p.color};flex-shrink:0" onclick="openPanel(${t.id})">${t.name}</div>`};}),
+      ...ge.map(e=>({html:`<div class="ev" style="background:${e._calColor||'#4285f4'}22;color:${e._calColor||'#4285f4'};flex-shrink:0">${e.summary||'(일정)'}</div>`}))
+    ];
+    const visEvs=allEvs.slice(0,MAX_EV).map(e=>e.html).join('');
+    const more=allEvs.length>MAX_EV?`<div style="font-size:10px;color:var(--text3);margin-top:auto">+${allEvs.length-MAX_EV}개</div>`:'';
+    html+=`<div class="day ${isToday?'today':''}"><div class="dn" style="flex-shrink:0">${d}</div>${visEvs}${more}</div>`;
   }
   const remain=(first+days)%7===0?0:7-(first+days)%7;
   for(let d=1;d<=remain;d++)html+=`<div class="day om"><div class="dn">${d}</div></div>`;
