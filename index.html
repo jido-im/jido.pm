@@ -453,8 +453,9 @@ let selIcon=ICONS[0],selColor=COLORS[0];
 let editingProjId=null;
 let panelTaskId=null; // currently open task in side panel
 let collapsedIds=new Set(); // collapsed tree nodes
-let accessToken=null,driveFileId=null,syncTimeout=null;
-let gcalEvents=[]; // Google Calendar events for today
+let accessToken=sessionStorage.getItem('jido_token')||null;
+let driveFileId=null,syncTimeout=null;
+let gcalEvents=[];
 
 // ── Google Drive ──────────────────────────────────────────
 (function(){
@@ -500,6 +501,7 @@ let gcalEvents=[]; // Google Calendar events for today
 let _tokenClient=null;
 async function _onSignedIn(token){
   accessToken=token;
+  sessionStorage.setItem('jido_token',token);
   document.getElementById('btn-signin').style.display='none';
   document.getElementById('btn-signout').style.display='';
   setSyncStatus('syncing','동기화 중...');
@@ -532,7 +534,7 @@ function signIn(){
     await _onSignedIn(res.access_token);
   }}).requestAccessToken();
 }
-function signOut(){accessToken=null;driveFileId=null;localStorage.removeItem('jido_login_hint');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
+function signOut(){accessToken=null;driveFileId=null;sessionStorage.removeItem('jido_token');localStorage.removeItem('jido_login_hint');document.getElementById('btn-signin').style.display='';document.getElementById('btn-signout').style.display='none';setSyncStatus('','로그인 필요');showToast('로그아웃');}
 async function fetchGcalEvents(){
   if(!accessToken) return;
   try{
@@ -548,7 +550,7 @@ async function fetchGcalEvents(){
       {headers:{Authorization:'Bearer '+accessToken}}
     );
     const calList=await calListRes.json();
-    const calendars=(calList.items||[]).filter(c=>c.accessRole&&c.accessRole!=='freeBusy');
+    const calendars=(calList.items||[]);
 
     // 2. 각 캘린더에서 이번달 이벤트 병렬 fetch
     const results=await Promise.allSettled(
@@ -786,7 +788,7 @@ function renderCal(){
     const MAX_EV=2;
     const allEvs=[
       ...dt.map(t=>{const p=getProj(t.projId);return{html:`<div class="ev" style="background:${p.color}22;color:${p.color};flex-shrink:0" onclick="openPanel(${t.id})">${t.name}</div>`};}),
-      ...ge.map(e=>({html:`<div class="ev" style="background:${e._calColor||'#4285f4'}22;color:${e._calColor||'#4285f4'};flex-shrink:0">${e.summary||'(일정)'}</div>`}))
+      ...ge.map(e=>({html:`<div class="ev" style="background:${e._calColor||'#4285f4'}33;color:${e._calColor||'#4285f4'};flex-shrink:0;border-left:2px solid ${e._calColor||'#4285f4'}">${e.summary||'(일정)'}</div>`}))
     ];
     const visEvs=allEvs.slice(0,MAX_EV).map(e=>e.html).join('');
     const more=allEvs.length>MAX_EV?`<div style="font-size:10px;color:var(--text3);margin-top:auto">+${allEvs.length-MAX_EV}개</div>`:'';
@@ -880,10 +882,10 @@ function renderTimeline(){
       const end=e.end?.dateTime?new Date(e.end.dateTime):null;
       const dur=end?Math.round((end-start)/60000):null;
       const timeStr=start.getHours().toString().padStart(2,'0')+':'+start.getMinutes().toString().padStart(2,'0');
-      return `<div class="tl-event" style="background:#E8F5E9;border:1px solid #81C784" title="${e.summary}">
-        <span style="font-size:11px;color:#388E3C;flex-shrink:0">📅</span>
-        <div class="tl-evt-name" style="color:#2E7D32">${e.summary||'(제목 없음)'}</div>
-        <div class="tl-evt-dur" style="color:#388E3C">${timeStr}${dur?' · '+fmtMins(dur):''}</div>
+      const ec=e._calColor||'#4285f4';
+      return `<div class="tl-event" style="background:${ec}22;border-left:3px solid ${ec};border-top:1px solid ${ec}33;border-right:1px solid ${ec}33;border-bottom:1px solid ${ec}33" title="${e.summary}">
+        <div class="tl-evt-name" style="color:${ec};font-weight:600">${e.summary||'(제목 없음)'}</div>
+        <div class="tl-evt-dur" style="color:${ec};opacity:.8">${timeStr}${dur?' · '+fmtMins(dur):''}</div>
       </div>`;
     }).join('');
 
@@ -1112,6 +1114,16 @@ function deleteProject(){
 // ── Init ──────────────────────────────────────────────────
 loadLocal();renderAll();
 document.getElementById('proj-filter').style.display='flex';
+// Auto-restore session from sessionStorage
+(async()=>{
+  if(accessToken){
+    document.getElementById('btn-signin').style.display='none';
+    document.getElementById('btn-signout').style.display='';
+    setSyncStatus('syncing','동기화 중...');
+    await loadFromDrive();
+    await fetchGcalEvents();
+  }
+})();
 </script>
 </body>
 </html>
