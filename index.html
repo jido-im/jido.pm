@@ -104,9 +104,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#f2f1ed;color:
 .cal-nav{display:flex;gap:5px}
 .nbtn{width:28px;height:28px;border:1px solid var(--border2);background:var(--card);border-radius:7px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;color:var(--text2)}
 .nbtn:hover{background:var(--bg)}
-.gl{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px}
-.dl{font-size:11px;font-weight:600;text-align:center;color:var(--text3);padding:4px 0}
+.gl{display:none}
+.dl{font-size:11px;font-weight:600;text-align:center;color:var(--text3);padding:6px 0}
 .cg{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.cg-full{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
 .day{min-height:70px;background:var(--card);border-radius:7px;padding:5px;border:1px solid var(--border);cursor:pointer}
 .day:hover{border-color:#a8c8e8}
 .day.om{background:var(--bg);opacity:.5}
@@ -310,8 +311,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#f2f1ed;color:
         <button class="nbtn" onclick="changeMonth(1)">&#8250;</button>
       </div>
     </div>
-    <div class="gl"><div class="dl">일</div><div class="dl">월</div><div class="dl">화</div><div class="dl">수</div><div class="dl">목</div><div class="dl">금</div><div class="dl">토</div></div>
-    <div class="cg" id="cal-grid"></div>
+    <div class="cg-full" id="cal-grid"></div>
   </div>
   <div id="view-daily" class="view">
     <div class="daily-date" id="daily-date"></div>
@@ -514,7 +514,7 @@ async function fetchGcalEvents(){
       {headers:{Authorization:'Bearer '+accessToken}}
     );
     const calList=await calListRes.json();
-    const calendars=(calList.items||[]).filter(c=>c.selected!==false);
+    const calendars=(calList.items||[]).filter(c=>c.accessRole&&c.accessRole!=='freeBusy');
 
     // 2. 각 캘린더에서 이번달 이벤트 병렬 fetch
     const results=await Promise.allSettled(
@@ -734,7 +734,9 @@ function renderCal(){
   const prevDays=new Date(calYear,calMonth,0).getDate();
   const today=new Date();
   const ft=tasks.filter(t=>!selProjId||t.projId===selProjId);
-  let html='';
+  // Day labels as first row in same grid
+  const dayLabels=['일','월','화','수','목','금','토'].map(d=>`<div class="dl">${d}</div>`).join('');
+  let html=dayLabels;
   for(let i=0;i<first;i++)html+=`<div class="day om"><div class="dn">${prevDays-first+1+i}</div></div>`;
   for(let d=1;d<=days;d++){
     const isToday=calYear===today.getFullYear()&&calMonth===today.getMonth()&&d===today.getDate();
